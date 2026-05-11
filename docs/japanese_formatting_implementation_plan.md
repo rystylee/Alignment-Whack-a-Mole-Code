@@ -415,7 +415,7 @@ def test_ellipsis_normalization():
 
 **追加依存関係**:
 ```bash
-pip install jaconv mecab-python3 unidic-lite
+uv add jaconv mecab-python3 unidic-lite
 ```
 
 **成果物**:
@@ -442,7 +442,7 @@ formatter = JapaneseNovelFormatter(config={
 
 **追加依存関係**:
 ```bash
-pip install spacy
+uv add spacy
 python -m spacy download ja_core_news_sm
 ```
 

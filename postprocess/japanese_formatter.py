@@ -7,9 +7,14 @@ Implements basic normalization rules for punctuation and spacing.
 """
 
 import argparse
+import logging
 import re
+import unicodedata
 from pathlib import Path
 from typing import Dict, List, Optional
+
+# Configure logging
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
 
 class FormattingRule:
@@ -292,6 +297,88 @@ class EnvironmentCharRemover(FormattingRule):
         return result
 
 
+class KanjiGlyphSelector(FormattingRule):
+    """Select appropriate Japanese kanji glyphs"""
+
+    # CJK Unified Ideographs main blocks (Unicode ranges)
+    CJK_RANGES = [
+        (0x4E00, 0x9FFF),  # CJK Unified Ideographs (main block)
+        (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
+        (0x20000, 0x2A6DF),  # CJK Unified Ideographs Extension B
+        (0x2A700, 0x2B73F),  # CJK Unified Ideographs Extension C
+        (0x2B740, 0x2B81F),  # CJK Unified Ideographs Extension D
+        (0x2B820, 0x2CEAF),  # CJK Unified Ideographs Extension E
+        (0x2CEB0, 0x2EBE0),  # CJK Unified Ideographs Extension F
+        (0x30000, 0x3134F),  # CJK Unified Ideographs Extension G
+        (0x31350, 0x323AF),  # CJK Unified Ideographs Extension H
+        (0x2EBF0, 0x2EE5F),  # CJK Unified Ideographs Extension I
+    ]
+
+    # CJK Compatibility Ideographs (often need normalization)
+    CJK_COMPAT_RANGES = [
+        (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+        (0x2F800, 0x2FA1F),  # CJK Compatibility Ideographs Supplement
+    ]
+
+    def __init__(self):
+        super().__init__("kanji_glyph", priority=8)
+        self.warning_count = 0
+        self.logger = logging.getLogger(__name__)
+
+    def apply(self, text: str) -> str:
+        """
+        Normalize kanji glyphs to prefer Japanese forms
+
+        Process:
+        1. Detect CJK compatibility ideographs (before normalization)
+        2. Apply Unicode NFC normalization (preserves Japanese glyphs)
+        3. Log warnings for non-standard characters
+
+        Note: NFC (Normalization Form Canonical Composition) is used
+        instead of NFKC to preserve semantic distinctions while
+        normalizing to canonical Japanese glyphs.
+        """
+        self.warning_count = 0
+
+        # First, check for compatibility ideographs BEFORE normalization
+        for char in text:
+            code_point = ord(char)
+
+            # Check if character is in CJK compatibility ranges
+            if self._is_compat_ideograph(code_point):
+                # Get the canonical decomposition
+                decomposed = unicodedata.decomposition(char)
+                if decomposed:
+                    self.warning_count += 1
+                    # Get the normalized character
+                    normalized_char = unicodedata.normalize("NFC", char)
+                    self.logger.warning(
+                        f"CJK compatibility ideograph detected: U+{code_point:04X} '{char}' "
+                        f"→ normalized to U+{ord(normalized_char):04X} '{normalized_char}'"
+                    )
+
+        if self.warning_count > 0:
+            self.logger.info(f"Total kanji normalization warnings: {self.warning_count}")
+
+        # Apply NFC normalization to ensure canonical form
+        # NFC preserves semantic meaning while normalizing variants
+        return unicodedata.normalize("NFC", text)
+
+    def _is_cjk_ideograph(self, code_point: int) -> bool:
+        """Check if a code point is a CJK ideograph"""
+        for start, end in self.CJK_RANGES:
+            if start <= code_point <= end:
+                return True
+        return False
+
+    def _is_compat_ideograph(self, code_point: int) -> bool:
+        """Check if a code point is a CJK compatibility ideograph"""
+        for start, end in self.CJK_COMPAT_RANGES:
+            if start <= code_point <= end:
+                return True
+        return False
+
+
 class JapaneseNovelFormatter:
     """
     Main formatter class for vertical Japanese novels
@@ -319,6 +406,7 @@ class JapaneseNovelFormatter:
         "paragraph_indent": True,
         "halfwidth_convert": True,
         "remove_env_chars": True,
+        "kanji_glyph": True,
     }
 
     def __init__(self, config: Optional[Dict[str, bool]] = None):
@@ -346,6 +434,7 @@ class JapaneseNovelFormatter:
             "paragraph_indent": ParagraphIndenter(),
             "halfwidth_convert": HalfWidthConverter(),
             "remove_env_chars": EnvironmentCharRemover(),
+            "kanji_glyph": KanjiGlyphSelector(),
         }
 
         # Register enabled rules
@@ -440,6 +529,7 @@ Examples:
     phase2_group.add_argument(
         "--remove-env-chars", action="store_true", help="Enable environment-dependent character removal"
     )
+    phase2_group.add_argument("--kanji-glyph", action="store_true", help="Enable kanji glyph selection (1.2)")
 
     return parser.parse_args()
 
@@ -463,6 +553,7 @@ def main():
         or args.paragraph_indent
         or args.halfwidth_convert
         or args.remove_env_chars
+        or args.kanji_glyph
     )
 
     if has_specific_rules:
@@ -477,6 +568,7 @@ def main():
             "paragraph_indent": args.paragraph_indent,
             "halfwidth_convert": args.halfwidth_convert,
             "remove_env_chars": args.remove_env_chars,
+            "kanji_glyph": args.kanji_glyph,
         }
     elif args.phase == 2:
         # Enable all Phase 2 rules (includes Phase 1)

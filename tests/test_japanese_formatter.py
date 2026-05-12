@@ -19,6 +19,7 @@ from postprocess.japanese_formatter import (
     EnvironmentCharRemover,
     HalfWidthConverter,
     JapaneseNovelFormatter,
+    KanjiGlyphSelector,
     ParagraphIndenter,
     TildeNormalizer,
 )
@@ -419,6 +420,96 @@ class TestPhase2Integration:
 　ABCと１２３名の参加者(1)"""
 
         assert formatter.format(input_text) == expected
+
+
+class TestKanjiGlyphSelector:
+    """Test kanji glyph selection rule (1.2)"""
+
+    def test_nfc_normalization(self):
+        """Test that NFC normalization is applied"""
+        rule = KanjiGlyphSelector()
+        # Test basic NFC normalization
+        # が (U+304C) vs が (U+304B + U+3099)
+        input_text = "\u304B\u3099"  # Decomposed form: か + combining dakuten
+        expected = "\u304C"  # Composed form: が
+        assert rule.apply(input_text) == expected
+
+    def test_regular_kanji_unchanged(self):
+        """Test that regular kanji pass through unchanged"""
+        rule = KanjiGlyphSelector()
+        input_text = "日本語の文章です"
+        expected = "日本語の文章です"
+        assert rule.apply(input_text) == expected
+
+    def test_cjk_ideograph_detection(self):
+        """Test CJK ideograph range detection"""
+        rule = KanjiGlyphSelector()
+        # Test main CJK range (U+4E00-U+9FFF)
+        assert rule._is_cjk_ideograph(0x4E00) is True  # 一
+        assert rule._is_cjk_ideograph(0x9FFF) is True  # End of range
+        assert rule._is_cjk_ideograph(0x3000) is False  # Ideographic space (not CJK)
+        assert rule._is_cjk_ideograph(0xFF00) is False  # Full-width forms
+
+    def test_compatibility_ideograph_detection(self):
+        """Test CJK compatibility ideograph detection"""
+        rule = KanjiGlyphSelector()
+        # Test compatibility ideograph range (U+F900-U+FAFF)
+        assert rule._is_compat_ideograph(0xF900) is True
+        assert rule._is_compat_ideograph(0xFAFF) is True
+        assert rule._is_compat_ideograph(0x4E00) is False  # Regular CJK
+
+    def test_compatibility_ideograph_normalization(self):
+        """Test that compatibility ideographs are normalized"""
+        rule = KanjiGlyphSelector()
+        # U+FA38 器 (compatibility) should normalize to U+5668 器 (canonical)
+        input_text = "\uFA38"  # Compatibility ideograph
+        result = rule.apply(input_text)
+        # NFC will normalize this to canonical form
+        assert result == "\u5668"  # Canonical form
+
+    def test_mixed_text_with_kanji(self):
+        """Test text with mix of kanji, kana, and other characters"""
+        rule = KanjiGlyphSelector()
+        input_text = "これは日本語の文章です。123"
+        # Should preserve all content while normalizing
+        result = rule.apply(input_text)
+        # Basic content should be preserved
+        assert "日本語" in result
+        assert "123" in result
+
+    def test_no_warning_for_standard_kanji(self):
+        """Test that standard kanji don't trigger warnings"""
+        rule = KanjiGlyphSelector()
+        input_text = "日本語"
+        rule.apply(input_text)
+        assert rule.warning_count == 0
+
+    def test_empty_string(self):
+        """Test empty string handling"""
+        rule = KanjiGlyphSelector()
+        assert rule.apply("") == ""
+
+    def test_only_ascii(self):
+        """Test ASCII-only text"""
+        rule = KanjiGlyphSelector()
+        input_text = "Hello World 123"
+        assert rule.apply(input_text) == input_text
+
+    def test_formatter_with_kanji_glyph(self):
+        """Test formatter with kanji glyph rule enabled"""
+        config = {"kanji_glyph": True}
+        formatter = JapaneseNovelFormatter(config=config)
+        # Test with decomposed character
+        input_text = "\u304B\u3099"  # Decomposed が
+        expected = "\u304C"  # Composed が
+        assert formatter.format(input_text) == expected
+
+    def test_phase2_includes_kanji_glyph(self):
+        """Test that Phase 2 config includes kanji glyph rule"""
+        formatter = JapaneseNovelFormatter(config=JapaneseNovelFormatter.PHASE2_CONFIG)
+        # Verify kanji_glyph rule is included
+        rule_names = [rule.name for rule in formatter.rules]
+        assert "kanji_glyph" in rule_names
 
 
 if __name__ == "__main__":

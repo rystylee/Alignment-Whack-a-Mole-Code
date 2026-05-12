@@ -130,12 +130,174 @@ class BlankLineRemover(FormattingRule):
         return text
 
 
+# === Phase 2 Rules (Medium) ===
+
+
+class ParagraphIndenter(FormattingRule):
+    """Add full-width space indentation to paragraphs"""
+
+    def __init__(self):
+        super().__init__("paragraph_indent", priority=5)
+
+    def apply(self, text: str) -> str:
+        """
+        Add full-width space indentation to paragraph beginnings
+
+        Rules:
+        - Add 「　」(full-width space) at the start of narrative paragraphs
+        - Skip dialogue lines (lines starting with 「)
+        - Skip lines that already have indentation
+        - Skip empty lines
+        """
+        lines = text.split("\n")
+        result = []
+
+        for line in lines:
+            # Skip empty lines
+            if not line.strip():
+                result.append(line)
+                continue
+
+            # Skip lines starting with 「 (dialogue)
+            if line.strip().startswith("「"):
+                result.append(line)
+                continue
+
+            # Add indentation if not already present
+            if not line.startswith("　"):
+                result.append("　" + line)
+            else:
+                result.append(line)
+
+        return "\n".join(result)
+
+
+class HalfWidthConverter(FormattingRule):
+    """Convert full-width to half-width for specific cases"""
+
+    def __init__(self):
+        super().__init__("halfwidth_convert", priority=6)
+
+    def apply(self, text: str) -> str:
+        """
+        Convert full-width characters to half-width for specific cases
+
+        Rules:
+        - Convert full-width alphanumeric to half-width
+        - Keep 1-2 digit numbers in half-width (tate-chu-yoko)
+        - Convert 3+ digit numbers to full-width
+        - Western text (consecutive alphabets) remains half-width
+        """
+        # First convert all full-width alphanumeric to half-width
+        text = self._convert_alphanumeric(text)
+        # Then selectively convert 3+ digit numbers back to full-width
+        text = self._handle_numbers(text)
+        return text
+
+    def _convert_alphanumeric(self, text: str) -> str:
+        """
+        Convert full-width ASCII characters to half-width
+
+        Converts characters in Unicode range U+FF01-U+FF5E
+        (full-width ASCII variants) to their half-width equivalents
+        """
+        result = []
+        for char in text:
+            code = ord(char)
+            # Full-width ASCII range (0xFF01-0xFF5E)
+            if 0xFF01 <= code <= 0xFF5E:
+                # Convert to half-width by subtracting offset
+                result.append(chr(code - 0xFEE0))
+            else:
+                result.append(char)
+        return "".join(result)
+
+    def _handle_numbers(self, text: str) -> str:
+        """
+        Keep 1-2 digit numbers half-width, convert 3+ digits to full-width
+
+        This follows the tate-chu-yoko convention where short numbers
+        are displayed horizontally in vertical text.
+        """
+
+        def replace_numbers(match):
+            num = match.group(0)
+            if len(num) <= 2:
+                # Keep half-width for tate-chu-yoko
+                return num
+            else:
+                # Convert to full-width for longer numbers
+                return "".join(chr(ord(c) + 0xFEE0) if "0" <= c <= "9" else c for c in num)
+
+        return re.sub(r"\d+", replace_numbers, text)
+
+
+class EnvironmentCharRemover(FormattingRule):
+    """Remove environment-dependent characters"""
+
+    # List of prohibited environment-dependent characters
+    PROHIBITED_CHARS = {
+        "①",
+        "②",
+        "③",
+        "④",
+        "⑤",
+        "⑥",
+        "⑦",
+        "⑧",
+        "⑨",
+        "⑩",
+        "㈱",
+        "㈲",
+        "㈹",
+        "№",
+        "㏍",
+        "℡",
+    }
+
+    # Mapping of environment-dependent characters to standard replacements
+    REPLACEMENT_MAP = {
+        "①": "(1)",
+        "②": "(2)",
+        "③": "(3)",
+        "④": "(4)",
+        "⑤": "(5)",
+        "⑥": "(6)",
+        "⑦": "(7)",
+        "⑧": "(8)",
+        "⑨": "(9)",
+        "⑩": "(10)",
+        "㈱": "株式会社",
+        "㈲": "有限会社",
+        "㈹": "代表",
+        "№": "No.",
+        "㏍": "K.K.",
+        "℡": "TEL",
+    }
+
+    def __init__(self):
+        super().__init__("remove_env_chars", priority=7)
+
+    def apply(self, text: str) -> str:
+        """
+        Replace environment-dependent characters with standard equivalents
+
+        Replaces circled numbers, corporate symbols, and other
+        environment-dependent characters that may not display
+        correctly across different systems or fonts.
+        """
+        result = text
+        for char, replacement in self.REPLACEMENT_MAP.items():
+            result = result.replace(char, replacement)
+        return result
+
+
 class JapaneseNovelFormatter:
     """
     Main formatter class for vertical Japanese novels
 
     Applies configurable formatting rules to text files.
-    Supports Phase 1 basic normalization rules.
+    Supports Phase 1 and Phase 2 rules.
     """
 
     # Default configuration for Phase 1
@@ -144,6 +306,19 @@ class JapaneseNovelFormatter:
         "dash": True,
         "tilde": True,
         "blank_lines": True,
+    }
+
+    # Configuration for Phase 2 (includes Phase 1)
+    PHASE2_CONFIG = {
+        # Phase 1 rules
+        "ellipsis": True,
+        "dash": True,
+        "tilde": True,
+        "blank_lines": True,
+        # Phase 2 rules
+        "paragraph_indent": True,
+        "halfwidth_convert": True,
+        "remove_env_chars": True,
     }
 
     def __init__(self, config: Optional[Dict[str, bool]] = None):
@@ -160,12 +335,17 @@ class JapaneseNovelFormatter:
 
     def _setup_rules(self):
         """Initialize and register all formatting rules"""
-        # Phase 1 rules
+        # All available rules (Phase 1 + Phase 2)
         available_rules = {
+            # Phase 1 rules
             "ellipsis": EllipsisNormalizer(),
             "dash": DashNormalizer(),
             "tilde": TildeNormalizer(),
             "blank_lines": BlankLineRemover(),
+            # Phase 2 rules
+            "paragraph_indent": ParagraphIndenter(),
+            "halfwidth_convert": HalfWidthConverter(),
+            "remove_env_chars": EnvironmentCharRemover(),
         }
 
         # Register enabled rules
@@ -215,12 +395,15 @@ class JapaneseNovelFormatter:
 def parse_arguments():
     """Parse command-line arguments"""
     parser = argparse.ArgumentParser(
-        description="Format Japanese vertical novels - Phase 1",
+        description="Format Japanese vertical novels - Phase 1 & 2",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Format single file
+  # Format single file with Phase 1 rules
   %(prog)s input.txt -o output.txt
+
+  # Format with Phase 2 rules (includes Phase 1)
+  %(prog)s input.txt -o output.txt --phase 2
 
   # Format multiple files to directory
   %(prog)s data_generated/羅生門/*.txt -o formatted/
@@ -239,14 +422,24 @@ Examples:
 
     parser.add_argument("--dry-run", action="store_true", help="Show formatted output without writing files")
 
+    parser.add_argument(
+        "--phase", type=int, choices=[1, 2], help="Enable all rules up to phase N (1: basic, 2: medium)"
+    )
+
     # Rule toggle options
-    rule_group = parser.add_argument_group("formatting rules")
+    rule_group = parser.add_argument_group("formatting rules (Phase 1)")
     rule_group.add_argument("--ellipsis", action="store_true", help="Enable ellipsis normalization (... → ……)")
     rule_group.add_argument("--dash", action="store_true", help="Enable dash normalization (-- → ――)")
     rule_group.add_argument("--tilde", action="store_true", help="Enable tilde normalization (~ → 〜)")
     rule_group.add_argument("--blank-lines", action="store_true", help="Enable blank line removal")
 
-    parser.add_argument("--all", action="store_true", help="Enable all Phase 1 rules (default if no rules specified)")
+    # Phase 2 rule options
+    phase2_group = parser.add_argument_group("formatting rules (Phase 2)")
+    phase2_group.add_argument("--paragraph-indent", action="store_true", help="Enable paragraph indentation")
+    phase2_group.add_argument("--halfwidth-convert", action="store_true", help="Enable half-width conversion")
+    phase2_group.add_argument(
+        "--remove-env-chars", action="store_true", help="Enable environment-dependent character removal"
+    )
 
     return parser.parse_args()
 
@@ -261,15 +454,33 @@ def main():
         return 1
 
     # Build configuration
-    # If specific rules are specified, enable only those
-    # Otherwise, enable all rules (Phase 1 default)
-    if args.ellipsis or args.dash or args.tilde or args.blank_lines:
+    # Priority: specific rules > phase flag > default (Phase 1)
+    has_specific_rules = (
+        args.ellipsis
+        or args.dash
+        or args.tilde
+        or args.blank_lines
+        or args.paragraph_indent
+        or args.halfwidth_convert
+        or args.remove_env_chars
+    )
+
+    if has_specific_rules:
+        # Use specific rules only
         config = {
+            # Phase 1 rules
             "ellipsis": args.ellipsis,
             "dash": args.dash,
             "tilde": args.tilde,
             "blank_lines": args.blank_lines,
+            # Phase 2 rules
+            "paragraph_indent": args.paragraph_indent,
+            "halfwidth_convert": args.halfwidth_convert,
+            "remove_env_chars": args.remove_env_chars,
         }
+    elif args.phase == 2:
+        # Enable all Phase 2 rules (includes Phase 1)
+        config = JapaneseNovelFormatter.PHASE2_CONFIG.copy()
     else:
         # Default: enable all Phase 1 rules
         config = JapaneseNovelFormatter.DEFAULT_CONFIG.copy()

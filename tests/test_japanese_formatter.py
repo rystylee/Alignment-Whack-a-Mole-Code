@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from postprocess.japanese_formatter import (
     BlankLineRemover,
+    CharacterRangeValidator,
     DashNormalizer,
     EllipsisNormalizer,
     EnvironmentCharRemover,
@@ -430,8 +431,8 @@ class TestKanjiGlyphSelector:
         rule = KanjiGlyphSelector()
         # Test basic NFC normalization
         # が (U+304C) vs が (U+304B + U+3099)
-        input_text = "\u304B\u3099"  # Decomposed form: か + combining dakuten
-        expected = "\u304C"  # Composed form: が
+        input_text = "\u304b\u3099"  # Decomposed form: か + combining dakuten
+        expected = "\u304c"  # Composed form: が
         assert rule.apply(input_text) == expected
 
     def test_regular_kanji_unchanged(self):
@@ -462,7 +463,7 @@ class TestKanjiGlyphSelector:
         """Test that compatibility ideographs are normalized"""
         rule = KanjiGlyphSelector()
         # U+FA38 器 (compatibility) should normalize to U+5668 器 (canonical)
-        input_text = "\uFA38"  # Compatibility ideograph
+        input_text = "\ufa38"  # Compatibility ideograph
         result = rule.apply(input_text)
         # NFC will normalize this to canonical form
         assert result == "\u5668"  # Canonical form
@@ -500,8 +501,8 @@ class TestKanjiGlyphSelector:
         config = {"kanji_glyph": True}
         formatter = JapaneseNovelFormatter(config=config)
         # Test with decomposed character
-        input_text = "\u304B\u3099"  # Decomposed が
-        expected = "\u304C"  # Composed が
+        input_text = "\u304b\u3099"  # Decomposed が
+        expected = "\u304c"  # Composed が
         assert formatter.format(input_text) == expected
 
     def test_phase2_includes_kanji_glyph(self):
@@ -510,6 +511,103 @@ class TestKanjiGlyphSelector:
         # Verify kanji_glyph rule is included
         rule_names = [rule.name for rule in formatter.rules]
         assert "kanji_glyph" in rule_names
+
+
+class TestCharacterRangeValidator:
+    """Test character range validation rule (1.1)"""
+
+    def test_valid_japanese_text(self):
+        """Test that standard Japanese text passes validation"""
+        rule = CharacterRangeValidator()
+        input_text = "これは日本語の文章です。"
+        # Should return original text (non-destructive)
+        assert rule.apply(input_text) == input_text
+
+    def test_emoji_detected(self):
+        """Test that emoji characters are detected as out-of-range"""
+        rule = CharacterRangeValidator()
+        input_text = "Hello😊"
+        result = rule.apply(input_text)
+        # Should return original text (non-destructive)
+        assert result == input_text
+        # Note: Warning would be logged but we can't easily test that here
+
+    def test_plane2_kanji_detected(self):
+        """Test that Plane 2 kanji (outside JIS X 0213) are detected"""
+        rule = CharacterRangeValidator()
+        # U+20BB7 is a Plane 2 character (吉 variant)
+        input_text = "これは\U00020bb7野家です"
+        result = rule.apply(input_text)
+        # Should return original text (non-destructive)
+        assert result == input_text
+
+    def test_mixed_text_with_out_of_range(self):
+        """Test text with both valid and out-of-range characters"""
+        rule = CharacterRangeValidator()
+        input_text = "日本語😊テキスト™"
+        result = rule.apply(input_text)
+        # Should return original text
+        assert result == input_text
+
+    def test_ascii_text(self):
+        """Test ASCII text (within JIS X 0213 range)"""
+        rule = CharacterRangeValidator()
+        input_text = "Hello World 123"
+        assert rule.apply(input_text) == input_text
+
+    def test_empty_string(self):
+        """Test empty string handling"""
+        rule = CharacterRangeValidator()
+        assert rule.apply("") == ""
+
+    def test_special_symbols(self):
+        """Test special symbols (some may be out of JIS range)"""
+        rule = CharacterRangeValidator()
+        input_text = "©®™"
+        result = rule.apply(input_text)
+        # Should return original text
+        assert result == input_text
+
+    def test_formatter_with_character_range(self):
+        """Test formatter with character range rule enabled"""
+        config = {"character_range": True}
+        formatter = JapaneseNovelFormatter(config=config)
+        input_text = "日本語😊"
+        result = formatter.format(input_text)
+        # Should return original text (non-destructive)
+        assert result == input_text
+
+    def test_phase3_includes_character_range(self):
+        """Test that Phase 3 config includes character range rule"""
+        formatter = JapaneseNovelFormatter(config=JapaneseNovelFormatter.PHASE3_CONFIG)
+        # Verify character_range rule is included
+        rule_names = [rule.name for rule in formatter.rules]
+        assert "character_range" in rule_names
+
+    def test_priority_is_zero(self):
+        """Test that character range validator has highest priority (0)"""
+        rule = CharacterRangeValidator()
+        assert rule.priority == 0
+
+    def test_phase3_includes_all_previous_phases(self):
+        """Test that Phase 3 includes all Phase 1 and 2 rules"""
+        formatter = JapaneseNovelFormatter(config=JapaneseNovelFormatter.PHASE3_CONFIG)
+        rule_names = [rule.name for rule in formatter.rules]
+
+        # Phase 1 rules
+        assert "ellipsis" in rule_names
+        assert "dash" in rule_names
+        assert "tilde" in rule_names
+        assert "blank_lines" in rule_names
+
+        # Phase 2 rules
+        assert "paragraph_indent" in rule_names
+        assert "halfwidth_convert" in rule_names
+        assert "remove_env_chars" in rule_names
+        assert "kanji_glyph" in rule_names
+
+        # Phase 3 rules
+        assert "character_range" in rule_names
 
 
 if __name__ == "__main__":

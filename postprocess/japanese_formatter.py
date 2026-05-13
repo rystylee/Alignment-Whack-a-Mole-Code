@@ -297,6 +297,71 @@ class EnvironmentCharRemover(FormattingRule):
         return result
 
 
+class CharacterRangeValidator(FormattingRule):
+    """Validate characters are within JIS X 0213:2004 range"""
+
+    def __init__(self):
+        super().__init__("character_range", priority=0)  # Highest priority
+        self.logger = logging.getLogger(__name__)
+
+    def apply(self, text: str) -> str:
+        """
+        Validate text contains only JIS X 0213:2004 characters
+
+        Strategy:
+        1. Test encoding with shift_jisx0213
+        2. Collect out-of-range characters with positions
+        3. Log detailed warnings
+        4. Return original text (non-destructive)
+
+        Returns:
+            Original text unchanged (validation only)
+        """
+        out_of_range = []
+
+        # Detect all out-of-range characters
+        for i, char in enumerate(text):
+            try:
+                char.encode("shift_jisx0213")
+            except UnicodeEncodeError:
+                out_of_range.append((i, char))
+
+        # Log warnings if out-of-range characters found
+        if out_of_range:
+            self._log_warnings(out_of_range)
+
+        return text  # Non-destructive: return original text
+
+    def _log_warnings(self, out_of_range: list):
+        """
+        Log detailed warnings for out-of-range characters
+
+        Args:
+            out_of_range: List of (position, character) tuples
+        """
+        # Get unique characters
+        unique_chars = {}
+        for pos, char in out_of_range:
+            if char not in unique_chars:
+                unique_chars[char] = []
+            unique_chars[char].append(pos)
+
+        self.logger.warning(f"Found {len(out_of_range)} character(s) outside JIS X 0213:2004 range")
+
+        # Log details for each unique character
+        for char in sorted(unique_chars.keys(), key=lambda c: ord(c)):
+            code_point = ord(char)
+            char_name = unicodedata.name(char, "UNKNOWN")
+            positions = unique_chars[char]
+
+            # Show first 5 positions only
+            pos_str = str(positions[:5])
+            if len(positions) > 5:
+                pos_str = pos_str[:-1] + f", ... ({len(positions)} total)]"
+
+            self.logger.warning(f"  U+{code_point:04X} '{char}' ({char_name}) " f"at position(s): {pos_str}")
+
+
 class KanjiGlyphSelector(FormattingRule):
     """Select appropriate Japanese kanji glyphs"""
 
@@ -409,6 +474,22 @@ class JapaneseNovelFormatter:
         "kanji_glyph": True,
     }
 
+    # Configuration for Phase 3 (includes Phase 1 + 2)
+    PHASE3_CONFIG = {
+        # Phase 1 rules
+        "ellipsis": True,
+        "dash": True,
+        "tilde": True,
+        "blank_lines": True,
+        # Phase 2 rules
+        "paragraph_indent": True,
+        "halfwidth_convert": True,
+        "remove_env_chars": True,
+        "kanji_glyph": True,
+        # Phase 3 rules
+        "character_range": True,
+    }
+
     def __init__(self, config: Optional[Dict[str, bool]] = None):
         """
         Initialize formatter with configuration
@@ -423,7 +504,7 @@ class JapaneseNovelFormatter:
 
     def _setup_rules(self):
         """Initialize and register all formatting rules"""
-        # All available rules (Phase 1 + Phase 2)
+        # All available rules (Phase 1 + Phase 2 + Phase 3)
         available_rules = {
             # Phase 1 rules
             "ellipsis": EllipsisNormalizer(),
@@ -435,6 +516,8 @@ class JapaneseNovelFormatter:
             "halfwidth_convert": HalfWidthConverter(),
             "remove_env_chars": EnvironmentCharRemover(),
             "kanji_glyph": KanjiGlyphSelector(),
+            # Phase 3 rules
+            "character_range": CharacterRangeValidator(),
         }
 
         # Register enabled rules
@@ -512,7 +595,10 @@ Examples:
     parser.add_argument("--dry-run", action="store_true", help="Show formatted output without writing files")
 
     parser.add_argument(
-        "--phase", type=int, choices=[1, 2], help="Enable all rules up to phase N (1: basic, 2: medium)"
+        "--phase",
+        type=int,
+        choices=[1, 2, 3],
+        help="Enable all rules up to phase N (1: basic, 2: medium, 3: advanced)",
     )
 
     # Rule toggle options
@@ -530,6 +616,10 @@ Examples:
         "--remove-env-chars", action="store_true", help="Enable environment-dependent character removal"
     )
     phase2_group.add_argument("--kanji-glyph", action="store_true", help="Enable kanji glyph selection (1.2)")
+
+    # Phase 3 rule options
+    phase3_group = parser.add_argument_group("formatting rules (Phase 3)")
+    phase3_group.add_argument("--character-range", action="store_true", help="Enable character range validation (1.1)")
 
     return parser.parse_args()
 
@@ -554,6 +644,7 @@ def main():
         or args.halfwidth_convert
         or args.remove_env_chars
         or args.kanji_glyph
+        or args.character_range
     )
 
     if has_specific_rules:
@@ -569,7 +660,12 @@ def main():
             "halfwidth_convert": args.halfwidth_convert,
             "remove_env_chars": args.remove_env_chars,
             "kanji_glyph": args.kanji_glyph,
+            # Phase 3 rules
+            "character_range": args.character_range,
         }
+    elif args.phase == 3:
+        # Enable all Phase 3 rules (includes Phase 1 + 2)
+        config = JapaneseNovelFormatter.PHASE3_CONFIG.copy()
     elif args.phase == 2:
         # Enable all Phase 2 rules (includes Phase 1)
         config = JapaneseNovelFormatter.PHASE2_CONFIG.copy()

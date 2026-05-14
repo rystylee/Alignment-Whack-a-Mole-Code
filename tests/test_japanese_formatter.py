@@ -330,6 +330,37 @@ class TestHalfWidthConverter:
         expected = "ABCテストDEF"
         assert rule.apply(input_text) == expected
 
+    def test_fullwidth_parentheses_preserved(self):
+        """Test that full-width parentheses remain full-width (for ruby)"""
+        rule = HalfWidthConverter()
+        input_text = "葬（とむら）う"
+        expected = "葬（とむら）う"
+        assert rule.apply(input_text) == expected
+
+    def test_fullwidth_dash_preserved(self):
+        """Test that full-width dashes remain full-width"""
+        rule = HalfWidthConverter()
+        input_text = "彼は－そう思った－"
+        expected = "彼は－そう思った－"
+        assert rule.apply(input_text) == expected
+
+    def test_fullwidth_symbols_preserved(self):
+        """Test that full-width symbols remain full-width"""
+        rule = HalfWidthConverter()
+        # Test various full-width punctuation and symbols
+        input_text = "「こんにちは」、彼は言った。"
+        expected = "「こんにちは」、彼は言った。"
+        assert rule.apply(input_text) == expected
+
+    def test_only_alphanumeric_converted(self):
+        """Test that only alphanumeric characters are converted, not symbols"""
+        rule = HalfWidthConverter()
+        # Full-width alphanumeric + full-width symbols
+        input_text = "ＡＢＣ（テスト）－１２３"
+        # Only ABC and digits should be converted, parentheses and dash remain full-width
+        expected = "ABC（テスト）－１２３"
+        assert rule.apply(input_text) == expected
+
 
 class TestEnvironmentCharRemover:
     """Test environment-dependent character removal rule"""
@@ -668,9 +699,7 @@ class TestCJKCompatibilityIntegration:
         )
 
         # Use Phase 2 formatter which includes kanji_glyph rule
-        formatter = JapaneseNovelFormatter(
-            config=JapaneseNovelFormatter.PHASE2_CONFIG
-        )
+        formatter = JapaneseNovelFormatter(config=JapaneseNovelFormatter.PHASE2_CONFIG)
         result = formatter.format(input_text)
 
         # Verify all compatibility ideographs are normalized
@@ -691,9 +720,7 @@ class TestCJKCompatibilityIntegration:
         """Test that Phase 2 configuration properly handles compatibility ideographs"""
         # Test with multiple compatibility ideographs from spec examples
         input_text = f"{chr(0xF900)}{chr(0xF901)}{chr(0xF902)}{chr(0xFA38)}"
-        formatter = JapaneseNovelFormatter(
-            config=JapaneseNovelFormatter.PHASE2_CONFIG
-        )
+        formatter = JapaneseNovelFormatter(config=JapaneseNovelFormatter.PHASE2_CONFIG)
         result = formatter.format(input_text)
 
         # All should be normalized to unified forms (with paragraph indent added)
@@ -710,9 +737,7 @@ class TestCJKCompatibilityIntegration:
         # Combine CJK compat chars with other formatting rules
         input_text = f"...{chr(0xF900)}です。\n\n\nこれは{chr(0xF901)}です。"
 
-        formatter = JapaneseNovelFormatter(
-            config=JapaneseNovelFormatter.PHASE2_CONFIG
-        )
+        formatter = JapaneseNovelFormatter(config=JapaneseNovelFormatter.PHASE2_CONFIG)
         result = formatter.format(input_text)
 
         # Ellipsis should be converted

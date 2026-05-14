@@ -10,6 +10,7 @@ import argparse
 import logging
 import re
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -32,6 +33,7 @@ class FormattingRule:
         """
         self.name = name
         self.priority = priority
+        self.changes = []  # Track changes made by this rule
 
     def apply(self, text: str) -> str:
         """
@@ -44,6 +46,51 @@ class FormattingRule:
             Transformed text
         """
         raise NotImplementedError(f"Rule {self.name} must implement apply()")
+
+    def log_change(self, line_num: int, before: str, after: str):
+        """
+        Record a change made by this rule
+
+        Args:
+            line_num: Line number where change occurred (1-indexed)
+            before: Text before transformation
+            after: Text after transformation
+        """
+        self.changes.append({"line": line_num, "before": before, "after": after})
+
+    def get_change_summary(self) -> str:
+        """
+        Get a summary of changes made by this rule
+
+        Returns:
+            Summary string describing the changes
+        """
+        if not self.changes:
+            return f"✓ {self.name}: No changes"
+        return f"✓ {self.name}: {len(self.changes)} change(s)"
+
+    def get_detailed_changes(self, max_display: int = 10) -> List[str]:
+        """
+        Get detailed list of changes
+
+        Args:
+            max_display: Maximum number of changes to display
+
+        Returns:
+            List of formatted change descriptions
+        """
+        details = []
+        for change in self.changes[:max_display]:
+            details.append(f"  - Line {change['line']}: \"{change['before']}\" → \"{change['after']}\"")
+
+        if len(self.changes) > max_display:
+            details.append(f"  ... and {len(self.changes) - max_display} more change(s)")
+
+        return details
+
+    def reset_changes(self):
+        """Reset the change log"""
+        self.changes = []
 
 
 class EllipsisNormalizer(FormattingRule):
@@ -62,17 +109,29 @@ class EllipsisNormalizer(FormattingRule):
 
         Note: Use placeholder to avoid cascading replacements
         """
-        # Use a temporary placeholder to avoid double conversion
-        PLACEHOLDER = "\x00ELLIPSIS\x00"
+        lines = text.split("\n")
+        result = []
 
-        # Replace three dots with placeholder
-        text = text.replace("...", PLACEHOLDER)
-        # Replace single horizontal ellipsis with placeholder
-        text = text.replace("…", PLACEHOLDER)
-        # Replace all placeholders with double horizontal ellipsis
-        text = text.replace(PLACEHOLDER, "……")
+        for line_num, line in enumerate(lines, 1):
+            original_line = line
 
-        return text
+            # Use a temporary placeholder to avoid double conversion
+            PLACEHOLDER = "\x00ELLIPSIS\x00"
+
+            # Replace three dots with placeholder
+            line = line.replace("...", PLACEHOLDER)
+            # Replace single horizontal ellipsis with placeholder
+            line = line.replace("…", PLACEHOLDER)
+            # Replace all placeholders with double horizontal ellipsis
+            line = line.replace(PLACEHOLDER, "……")
+
+            # Log changes if line was modified
+            if line != original_line:
+                self.log_change(line_num, original_line, line)
+
+            result.append(line)
+
+        return "\n".join(result)
 
 
 class DashNormalizer(FormattingRule):
@@ -89,11 +148,24 @@ class DashNormalizer(FormattingRule):
         - -- or --- → ――
         - — (em dash) → ――
         """
-        # Replace multiple hyphens with double horizontal bar
-        text = re.sub(r"-{2,}", "――", text)
-        # Replace em dash with double horizontal bar
-        text = text.replace("—", "――")
-        return text
+        lines = text.split("\n")
+        result = []
+
+        for line_num, line in enumerate(lines, 1):
+            original_line = line
+
+            # Replace multiple hyphens with double horizontal bar
+            line = re.sub(r"-{2,}", "――", line)
+            # Replace em dash with double horizontal bar
+            line = line.replace("—", "――")
+
+            # Log changes if line was modified
+            if line != original_line:
+                self.log_change(line_num, original_line, line)
+
+            result.append(line)
+
+        return "\n".join(result)
 
 
 class TildeNormalizer(FormattingRule):
@@ -110,11 +182,24 @@ class TildeNormalizer(FormattingRule):
         - ~ → 〜
         - ～ (full-width tilde) → 〜 (wave dash)
         """
-        # Replace ASCII tilde with wave dash
-        text = text.replace("~", "〜")
-        # Replace full-width tilde with wave dash
-        text = text.replace("～", "〜")
-        return text
+        lines = text.split("\n")
+        result = []
+
+        for line_num, line in enumerate(lines, 1):
+            original_line = line
+
+            # Replace ASCII tilde with wave dash
+            line = line.replace("~", "〜")
+            # Replace full-width tilde with wave dash
+            line = line.replace("～", "〜")
+
+            # Log changes if line was modified
+            if line != original_line:
+                self.log_change(line_num, original_line, line)
+
+            result.append(line)
+
+        return "\n".join(result)
 
 
 class BlankLineRemover(FormattingRule):
@@ -130,6 +215,34 @@ class BlankLineRemover(FormattingRule):
         Transformations:
         - 3+ consecutive newlines → 2 newlines (1 blank line)
         """
+        # Find and log all instances of excessive blank lines
+        lines = text.split("\n")
+        blank_count = 0
+        blank_start_line = 0
+
+        for line_num, line in enumerate(lines, 1):
+            if line == "":
+                if blank_count == 0:
+                    blank_start_line = line_num
+                blank_count += 1
+            else:
+                if blank_count >= 3:
+                    # Log the reduction of blank lines
+                    self.log_change(
+                        blank_start_line,
+                        f"{blank_count} consecutive blank lines",
+                        "2 consecutive blank lines (1 blank line)",
+                    )
+                blank_count = 0
+
+        # Check last section
+        if blank_count >= 3:
+            self.log_change(
+                blank_start_line,
+                f"{blank_count} consecutive blank lines",
+                "2 consecutive blank lines (1 blank line)",
+            )
+
         # Replace 3 or more consecutive newlines with exactly 2
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text
@@ -157,7 +270,7 @@ class ParagraphIndenter(FormattingRule):
         lines = text.split("\n")
         result = []
 
-        for line in lines:
+        for line_num, line in enumerate(lines, 1):
             # Skip empty lines
             if not line.strip():
                 result.append(line)
@@ -170,7 +283,9 @@ class ParagraphIndenter(FormattingRule):
 
             # Add indentation if not already present
             if not line.startswith("　"):
-                result.append("　" + line)
+                modified_line = "　" + line
+                self.log_change(line_num, line, modified_line)
+                result.append(modified_line)
             else:
                 result.append(line)
 
@@ -193,24 +308,47 @@ class HalfWidthConverter(FormattingRule):
         - Convert 3+ digit numbers to full-width
         - Western text (consecutive alphabets) remains half-width
         """
-        # First convert all full-width alphanumeric to half-width
-        text = self._convert_alphanumeric(text)
-        # Then selectively convert 3+ digit numbers back to full-width
-        text = self._handle_numbers(text)
-        return text
+        lines = text.split("\n")
+        result = []
+
+        for line_num, line in enumerate(lines, 1):
+            original_line = line
+
+            # First convert all full-width alphanumeric to half-width
+            line = self._convert_alphanumeric(line)
+            # Then selectively convert 3+ digit numbers back to full-width
+            line = self._handle_numbers(line)
+
+            # Log changes if line was modified
+            if line != original_line:
+                self.log_change(line_num, original_line, line)
+
+            result.append(line)
+
+        return "\n".join(result)
 
     def _convert_alphanumeric(self, text: str) -> str:
         """
-        Convert full-width ASCII characters to half-width
+        Convert full-width alphanumeric characters to half-width
 
-        Converts characters in Unicode range U+FF01-U+FF5E
-        (full-width ASCII variants) to their half-width equivalents
+        Converts only alphanumeric characters (0-9, A-Z, a-z) from full-width
+        to half-width. All punctuation and symbols remain full-width as per
+        Japanese typesetting rules.
+
+        Rules:
+        - Convert: ０-９ (U+FF10-U+FF19), Ａ-Ｚ (U+FF21-U+FF3A), ａ-ｚ (U+FF41-U+FF5A)
+        - Keep full-width: All punctuation and symbols (brackets, dashes, etc.)
         """
         result = []
         for char in text:
             code = ord(char)
-            # Full-width ASCII range (0xFF01-0xFF5E)
-            if 0xFF01 <= code <= 0xFF5E:
+            # Only convert full-width alphanumeric characters
+            # 0-9: U+FF10-U+FF19, A-Z: U+FF21-U+FF3A, a-z: U+FF41-U+FF5A
+            if (
+                0xFF10 <= code <= 0xFF19  # Full-width digits
+                or 0xFF21 <= code <= 0xFF3A  # Full-width uppercase
+                or 0xFF41 <= code <= 0xFF5A
+            ):  # Full-width lowercase
                 # Convert to half-width by subtracting offset
                 result.append(chr(code - 0xFEE0))
             else:
@@ -291,10 +429,23 @@ class EnvironmentCharRemover(FormattingRule):
         environment-dependent characters that may not display
         correctly across different systems or fonts.
         """
-        result = text
-        for char, replacement in self.REPLACEMENT_MAP.items():
-            result = result.replace(char, replacement)
-        return result
+        lines = text.split("\n")
+        result = []
+
+        for line_num, line in enumerate(lines, 1):
+            original_line = line
+
+            # Replace environment-dependent characters
+            for char, replacement in self.REPLACEMENT_MAP.items():
+                line = line.replace(char, replacement)
+
+            # Log changes if line was modified
+            if line != original_line:
+                self.log_change(line_num, original_line, line)
+
+            result.append(line)
+
+        return "\n".join(result)
 
 
 class CharacterRangeValidator(FormattingRule):
@@ -490,15 +641,17 @@ class JapaneseNovelFormatter:
         "character_range": True,
     }
 
-    def __init__(self, config: Optional[Dict[str, bool]] = None):
+    def __init__(self, config: Optional[Dict[str, bool]] = None, verbose: bool = False):
         """
         Initialize formatter with configuration
 
         Args:
             config: Configuration dict with rule toggles.
                    If None, uses default config (all Phase 1 rules enabled).
+            verbose: Enable verbose logging of changes
         """
         self.config = config if config is not None else self.DEFAULT_CONFIG.copy()
+        self.verbose = verbose
         self.rules: List[FormattingRule] = []
         self._setup_rules()
 
@@ -538,10 +691,85 @@ class JapaneseNovelFormatter:
         Returns:
             Formatted text string
         """
+        # Reset change logs for all rules
+        for rule in self.rules:
+            rule.reset_changes()
+
         result = text
         for rule in self.rules:
             result = rule.apply(result)
         return result
+
+    def print_change_summary(self):
+        """Print a summary of all changes made by rules"""
+        total_changes = sum(len(rule.changes) for rule in self.rules)
+
+        if total_changes == 0:
+            print("\n✓ No changes made")
+            return
+
+        print("\n" + "=" * 60)
+        print("FORMATTING SUMMARY")
+        print("=" * 60)
+
+        for rule in self.rules:
+            print(rule.get_change_summary())
+            if self.verbose and rule.changes:
+                for detail in rule.get_detailed_changes():
+                    print(detail)
+
+        print("-" * 60)
+        print(f"Total changes: {total_changes}")
+        print("=" * 60)
+
+    def write_log_file(self, log_path: Path, input_path: Path, output_path: Path):
+        """
+        Write detailed change log to a file
+
+        Args:
+            log_path: Path to log file
+            input_path: Path to input file
+            output_path: Path to output file
+        """
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write("=" * 60 + "\n")
+            f.write("Japanese Novel Formatter - Change Log\n")
+            f.write("=" * 60 + "\n")
+            f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Input file: {input_path}\n")
+            f.write(f"Output file: {output_path}\n")
+            f.write("=" * 60 + "\n\n")
+
+            # Write enabled rules
+            f.write("Enabled Rules:\n")
+            for rule in self.rules:
+                f.write(f"  - {rule.name} (priority: {rule.priority})\n")
+            f.write("\n")
+
+            # Write detailed changes
+            total_changes = sum(len(rule.changes) for rule in self.rules)
+
+            if total_changes == 0:
+                f.write("No changes made.\n")
+            else:
+                f.write("Detailed Changes:\n")
+                f.write("-" * 60 + "\n\n")
+
+                for rule in self.rules:
+                    if rule.changes:
+                        f.write(f"{rule.get_change_summary()}\n")
+                        for change in rule.changes:
+                            f.write(f"  Line {change['line']}:\n")
+                            f.write(f"    Before: {change['before']}\n")
+                            f.write(f"    After:  {change['after']}\n")
+                        f.write("\n")
+
+                f.write("-" * 60 + "\n")
+                f.write(f"Total changes: {total_changes}\n")
+
+            f.write("\n" + "=" * 60 + "\n")
+            f.write("End of log\n")
+            f.write("=" * 60 + "\n")
 
     def format_file(self, input_path: Path, output_path: Path):
         """
@@ -621,6 +849,14 @@ Examples:
     phase3_group = parser.add_argument_group("formatting rules (Phase 3)")
     phase3_group.add_argument("--character-range", action="store_true", help="Enable character range validation (1.1)")
 
+    # Logging options
+    log_group = parser.add_argument_group("logging options")
+    log_group.add_argument("--verbose", action="store_true", help="Show detailed changes for each rule")
+    log_group.add_argument(
+        "--log-file", action="store_true", default=True, help="Write detailed log to file (default: enabled)"
+    )
+    log_group.add_argument("--no-log-file", action="store_true", help="Disable log file writing")
+
     return parser.parse_args()
 
 
@@ -673,8 +909,11 @@ def main():
         # Default: enable all Phase 1 rules
         config = JapaneseNovelFormatter.DEFAULT_CONFIG.copy()
 
+    # Determine if log file should be written
+    write_log = args.log_file and not args.no_log_file and not args.dry_run
+
     # Initialize formatter
-    formatter = JapaneseNovelFormatter(config=config)
+    formatter = JapaneseNovelFormatter(config=config, verbose=args.verbose)
 
     # Process input files
     input_paths = [Path(f) for f in args.input]
@@ -711,6 +950,16 @@ def main():
 
         print(f"Formatting: {input_file} → {output_file}")
         formatter.format_file(input_file, output_file)
+
+        # Print summary
+        formatter.print_change_summary()
+
+        # Write log file if enabled
+        if write_log:
+            log_file = output_file.parent / f"{output_file.name}.log"
+            formatter.write_log_file(log_file, input_file, output_file)
+            print(f"\n✓ Log written to: {log_file}")
+
         print("✓ Done")
 
     # Multiple file mode or dry-run
@@ -724,6 +973,9 @@ def main():
                 print(f"File: {input_file}")
                 print(f"{'='*60}")
                 print(formatted)
+
+                # Print summary for dry run
+                formatter.print_change_summary()
             else:
                 # Write to output directory
                 if not output_path or not output_path.is_dir():
@@ -731,11 +983,22 @@ def main():
                     return 1
 
                 output_file = output_path / input_file.name
-                print(f"Formatting: {input_file} → {output_file}")
+                print(f"\nFormatting: {input_file} → {output_file}")
                 formatter.format_file(input_file, output_file)
 
+                # Print summary for this file
+                formatter.print_change_summary()
+
+                # Write log file if enabled
+                if write_log:
+                    log_file = output_file.parent / f"{output_file.name}.log"
+                    formatter.write_log_file(log_file, input_file, output_file)
+                    print(f"✓ Log written to: {log_file}")
+
         if not args.dry_run:
+            print(f"\n{'='*60}")
             print(f"✓ Formatted {len(expanded_paths)} file(s)")
+            print(f"{'='*60}")
 
     return 0
 

@@ -459,6 +459,7 @@ class CharacterRangeValidator(FormattingRule):
     def __init__(self):
         super().__init__("character_range", priority=99)  # Lowest priority - validate after all transformations
         self.logger = logging.getLogger(__name__)
+        self.out_of_range_chars = []  # Store out-of-range character information
 
     def apply(self, text: str) -> str:
         """
@@ -473,7 +474,8 @@ class CharacterRangeValidator(FormattingRule):
         Returns:
             Original text unchanged (validation only)
         """
-        out_of_range = []
+        # Reset stored information
+        self.out_of_range_chars = []
 
         # Detect all out-of-range characters with line and column info
         lines = text.split("\n")
@@ -482,11 +484,11 @@ class CharacterRangeValidator(FormattingRule):
                 try:
                     char.encode("shift_jisx0213")
                 except UnicodeEncodeError:
-                    out_of_range.append((line_num, col_num, char))
+                    self.out_of_range_chars.append((line_num, col_num, char))
 
         # Log warnings if out-of-range characters found
-        if out_of_range:
-            self._log_warnings(out_of_range)
+        if self.out_of_range_chars:
+            self._log_warnings(self.out_of_range_chars)
 
         return text  # Non-destructive: return original text
 
@@ -716,20 +718,65 @@ class JapaneseNovelFormatter:
 
         if total_changes == 0:
             print("\n✓ No changes made")
+        else:
+            print("\n" + "=" * 60)
+            print("FORMATTING SUMMARY")
+            print("=" * 60)
+
+            for rule in self.rules:
+                print(rule.get_change_summary())
+                if self.verbose and rule.changes:
+                    for detail in rule.get_detailed_changes():
+                        print(detail)
+
+            print("-" * 60)
+            print(f"Total changes: {total_changes}")
+            print("=" * 60)
+
+        # Print character range validation warnings
+        self._print_character_range_warnings()
+
+    def _print_character_range_warnings(self):
+        """Print character range validation warnings if any"""
+        # Find CharacterRangeValidator rule
+        validator = None
+        for rule in self.rules:
+            if isinstance(rule, CharacterRangeValidator):
+                validator = rule
+                break
+
+        if not validator or not validator.out_of_range_chars:
             return
 
+        # Print warnings
         print("\n" + "=" * 60)
-        print("FORMATTING SUMMARY")
+        print("CHARACTER RANGE VALIDATION WARNINGS")
         print("=" * 60)
+        print(f"Found {len(validator.out_of_range_chars)} character(s) outside JIS X 0213:2004 range:")
 
-        for rule in self.rules:
-            print(rule.get_change_summary())
-            if self.verbose and rule.changes:
-                for detail in rule.get_detailed_changes():
-                    print(detail)
+        # Group by character
+        char_locations = {}
+        for line_num, col_num, char in validator.out_of_range_chars:
+            if char not in char_locations:
+                char_locations[char] = []
+            char_locations[char].append((line_num, col_num))
 
-        print("-" * 60)
-        print(f"Total changes: {total_changes}")
+        # Print details for each unique character
+        for char in sorted(char_locations.keys(), key=lambda c: ord(c)):
+            code_point = ord(char)
+            char_name = unicodedata.name(char, "UNKNOWN")
+            locations = char_locations[char]
+
+            # Format locations as "line:column"
+            location_strs = [f"line {line}:{col}" for line, col in locations[:5]]
+
+            if len(locations) > 5:
+                loc_display = ", ".join(location_strs) + f", ... ({len(locations)} total)"
+            else:
+                loc_display = ", ".join(location_strs)
+
+            print(f"  U+{code_point:04X} '{char}' ({char_name}) at {loc_display}")
+
         print("=" * 60)
 
     def write_log_file(self, log_path: Path, input_path: Path, output_path: Path):
@@ -777,9 +824,61 @@ class JapaneseNovelFormatter:
                 f.write("-" * 60 + "\n")
                 f.write(f"Total changes: {total_changes}\n")
 
+            # Write character range validation warnings
+            self._write_character_range_warnings(f)
+
             f.write("\n" + "=" * 60 + "\n")
             f.write("End of log\n")
             f.write("=" * 60 + "\n")
+
+    def _write_character_range_warnings(self, f):
+        """
+        Write character range validation warnings to log file
+
+        Args:
+            f: File object to write to
+        """
+        # Find CharacterRangeValidator rule
+        validator = None
+        for rule in self.rules:
+            if isinstance(rule, CharacterRangeValidator):
+                validator = rule
+                break
+
+        if not validator or not validator.out_of_range_chars:
+            return
+
+        # Write warnings section
+        f.write("\n" + "=" * 60 + "\n")
+        f.write("Character Range Validation Warnings\n")
+        f.write("=" * 60 + "\n")
+        f.write(f"Found {len(validator.out_of_range_chars)} character(s) outside JIS X 0213:2004 range:\n\n")
+
+        # Group by character
+        char_locations = {}
+        for line_num, col_num, char in validator.out_of_range_chars:
+            if char not in char_locations:
+                char_locations[char] = []
+            char_locations[char].append((line_num, col_num))
+
+        # Write details for each unique character
+        for char in sorted(char_locations.keys(), key=lambda c: ord(c)):
+            code_point = ord(char)
+            char_name = unicodedata.name(char, "UNKNOWN")
+            locations = char_locations[char]
+
+            # Format locations as "line:column"
+            location_strs = [f"line {line}:{col}" for line, col in locations[:10]]
+
+            if len(locations) > 10:
+                loc_display = ", ".join(location_strs) + f", ... ({len(locations)} total)"
+            else:
+                loc_display = ", ".join(location_strs)
+
+            f.write(f"  U+{code_point:04X} '{char}' ({char_name})\n")
+            f.write(f"    Locations: {loc_display}\n\n")
+
+        f.write("-" * 60 + "\n")
 
     def format_file(self, input_path: Path, output_path: Path):
         """

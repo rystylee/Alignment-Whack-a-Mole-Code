@@ -105,9 +105,10 @@ class EllipsisNormalizer(FormattingRule):
 
         Transformations:
         - ... → ……
-        - … → ……
+        - …+ (one or more) → ……
 
-        Note: Use placeholder to avoid cascading replacements
+        Note: Multiple consecutive ellipsis characters are normalized to a single ……
+        This prevents double conversion of already normalized text.
         """
         lines = text.split("\n")
         result = []
@@ -115,15 +116,11 @@ class EllipsisNormalizer(FormattingRule):
         for line_num, line in enumerate(lines, 1):
             original_line = line
 
-            # Use a temporary placeholder to avoid double conversion
-            PLACEHOLDER = "\x00ELLIPSIS\x00"
-
-            # Replace three dots with placeholder
-            line = line.replace("...", PLACEHOLDER)
-            # Replace single horizontal ellipsis with placeholder
-            line = line.replace("…", PLACEHOLDER)
-            # Replace all placeholders with double horizontal ellipsis
-            line = line.replace(PLACEHOLDER, "……")
+            # Replace three dots with double horizontal ellipsis
+            line = line.replace("...", "……")
+            # Replace one or more consecutive horizontal ellipsis with double horizontal ellipsis
+            # This handles both single … and already normalized …… (or more)
+            line = re.sub(r"…+", "……", line)
 
             # Log changes if line was modified
             if line != original_line:
@@ -146,7 +143,11 @@ class DashNormalizer(FormattingRule):
 
         Transformations:
         - -- or --- → ――
-        - — (em dash) → ――
+        - —+ (one or more em dashes) → ――
+        - ー+ (one or more katakana prolonged sound marks) → ――
+
+        Note: Multiple consecutive dash/prolonged sound characters are normalized to a single ――
+        This prevents double conversion of already normalized text.
         """
         lines = text.split("\n")
         result = []
@@ -156,8 +157,12 @@ class DashNormalizer(FormattingRule):
 
             # Replace multiple hyphens with double horizontal bar
             line = re.sub(r"-{2,}", "――", line)
-            # Replace em dash with double horizontal bar
-            line = line.replace("—", "――")
+            # Replace one or more consecutive em dashes with double horizontal bar
+            # This handles both single — and already normalized —— (or more)
+            line = re.sub(r"—+", "――", line)
+            # Replace one or more consecutive katakana prolonged sound marks with double horizontal bar
+            # This handles both single ー and already normalized ーー (or more)
+            line = re.sub(r"ー+", "――", line)
 
             # Log changes if line was modified
             if line != original_line:

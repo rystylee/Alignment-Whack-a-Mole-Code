@@ -55,6 +55,28 @@ class TestEllipsisNormalizer:
         expected = "彼は……そして……消えた……"
         assert rule.apply(input_text) == expected
 
+    def test_already_normalized_ellipsis(self):
+        """Test that already normalized …… is not double-converted"""
+        rule = EllipsisNormalizer()
+        input_text = "待って……"
+        expected = "待って……"
+        assert rule.apply(input_text) == expected
+
+    def test_multiple_consecutive_ellipsis(self):
+        """Test multiple consecutive … characters are normalized to single ……"""
+        rule = EllipsisNormalizer()
+        # 3 consecutive … should become ……
+        input_text = "待って………"  # 3 single ellipsis marks
+        expected = "待って……"
+        assert rule.apply(input_text) == expected
+
+    def test_mixed_ellipsis_forms(self):
+        """Test mix of ... and … in same text"""
+        rule = EllipsisNormalizer()
+        input_text = "...そして…また……"
+        expected = "……そして……また……"
+        assert rule.apply(input_text) == expected
+
 
 class TestDashNormalizer:
     """Test dash normalization rule"""
@@ -83,10 +105,52 @@ class TestDashNormalizer:
         expected = "彼は――そう思った――"
         assert rule.apply(input_text) == expected
 
+    def test_double_em_dash(self):
+        """Test —— → ――"""
+        rule = DashNormalizer()
+        input_text = "彼は——そう思った"
+        expected = "彼は――そう思った"
+        assert rule.apply(input_text) == expected
+
+    def test_multiple_em_dashes(self):
+        """Test multiple em dashes → ――"""
+        rule = DashNormalizer()
+        input_text = "彼は———そう思った"
+        expected = "彼は――そう思った"
+        assert rule.apply(input_text) == expected
+
     def test_long_dash(self):
         """Test ---- → ――"""
         rule = DashNormalizer()
         assert rule.apply("----") == "――"
+
+    def test_katakana_prolonged_sound(self):
+        """Test ー → ――"""
+        rule = DashNormalizer()
+        input_text = "彼はーそう思った"
+        expected = "彼は――そう思った"
+        assert rule.apply(input_text) == expected
+
+    def test_multiple_katakana_prolonged_sounds(self):
+        """Test multiple ー characters → ――"""
+        rule = DashNormalizer()
+        input_text = "彼はーーーそう思った"
+        expected = "彼は――そう思った"
+        assert rule.apply(input_text) == expected
+
+    def test_already_normalized_dash(self):
+        """Test that already normalized ―― is not double-converted"""
+        rule = DashNormalizer()
+        input_text = "彼は――そう思った"
+        expected = "彼は――そう思った"
+        assert rule.apply(input_text) == expected
+
+    def test_mixed_dash_forms(self):
+        """Test mix of --, —, and ー in same text"""
+        rule = DashNormalizer()
+        input_text = "--そして—またーー"
+        expected = "――そして――また――"
+        assert rule.apply(input_text) == expected
 
 
 class TestTildeNormalizer:

@@ -457,7 +457,7 @@ class CharacterRangeValidator(FormattingRule):
     """Validate characters are within JIS X 0213:2004 range"""
 
     def __init__(self):
-        super().__init__("character_range", priority=0)  # Highest priority
+        super().__init__("character_range", priority=99)  # Lowest priority - validate after all transformations
         self.logger = logging.getLogger(__name__)
 
     def apply(self, text: str) -> str:
@@ -466,7 +466,7 @@ class CharacterRangeValidator(FormattingRule):
 
         Strategy:
         1. Test encoding with shift_jisx0213
-        2. Collect out-of-range characters with positions
+        2. Collect out-of-range characters with line and column positions
         3. Log detailed warnings
         4. Return original text (non-destructive)
 
@@ -475,12 +475,14 @@ class CharacterRangeValidator(FormattingRule):
         """
         out_of_range = []
 
-        # Detect all out-of-range characters
-        for i, char in enumerate(text):
-            try:
-                char.encode("shift_jisx0213")
-            except UnicodeEncodeError:
-                out_of_range.append((i, char))
+        # Detect all out-of-range characters with line and column info
+        lines = text.split("\n")
+        for line_num, line in enumerate(lines, 1):
+            for col_num, char in enumerate(line, 1):
+                try:
+                    char.encode("shift_jisx0213")
+                except UnicodeEncodeError:
+                    out_of_range.append((line_num, col_num, char))
 
         # Log warnings if out-of-range characters found
         if out_of_range:
@@ -493,14 +495,14 @@ class CharacterRangeValidator(FormattingRule):
         Log detailed warnings for out-of-range characters
 
         Args:
-            out_of_range: List of (position, character) tuples
+            out_of_range: List of (line_num, col_num, character) tuples
         """
-        # Get unique characters
+        # Get unique characters with their locations
         unique_chars = {}
-        for pos, char in out_of_range:
+        for line_num, col_num, char in out_of_range:
             if char not in unique_chars:
                 unique_chars[char] = []
-            unique_chars[char].append(pos)
+            unique_chars[char].append((line_num, col_num))
 
         self.logger.warning(f"Found {len(out_of_range)} character(s) outside JIS X 0213:2004 range")
 
@@ -508,14 +510,17 @@ class CharacterRangeValidator(FormattingRule):
         for char in sorted(unique_chars.keys(), key=lambda c: ord(c)):
             code_point = ord(char)
             char_name = unicodedata.name(char, "UNKNOWN")
-            positions = unique_chars[char]
+            locations = unique_chars[char]
 
-            # Show first 5 positions only
-            pos_str = str(positions[:5])
-            if len(positions) > 5:
-                pos_str = pos_str[:-1] + f", ... ({len(positions)} total)]"
+            # Format locations as "line:column"
+            location_strs = [f"line {line}:{col}" for line, col in locations[:5]]
 
-            self.logger.warning(f"  U+{code_point:04X} '{char}' ({char_name}) " f"at position(s): {pos_str}")
+            if len(locations) > 5:
+                loc_display = ", ".join(location_strs) + f", ... ({len(locations)} total)"
+            else:
+                loc_display = ", ".join(location_strs)
+
+            self.logger.warning(f"  U+{code_point:04X} '{char}' ({char_name}) at {loc_display}")
 
 
 class KanjiGlyphSelector(FormattingRule):

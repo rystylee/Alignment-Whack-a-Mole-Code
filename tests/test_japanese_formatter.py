@@ -468,6 +468,50 @@ class TestKanjiGlyphSelector:
         # NFC will normalize this to canonical form
         assert result == "\u5668"  # Canonical form
 
+    def test_cjk_compat_comprehensive(self):
+        """Test comprehensive CJK compatibility ideograph normalization (spec 1.3)"""
+        rule = KanjiGlyphSelector()
+        # Test multiple compatibility ideographs from the spec
+        test_cases = [
+            ("\uf900", "\u8c48"),  # 豈 (compatibility) → 豈 (unified)
+            ("\uf901", "\u66f4"),  # 更 (compatibility) → 更 (unified)
+            ("\uf902", "\u8eca"),  # 車 (compatibility) → 車 (unified)
+            ("\ufa38", "\u5668"),  # 器 (compatibility) → 器 (unified)
+        ]
+        for compat, unified in test_cases:
+            result = rule.apply(compat)
+            assert result == unified, f"Failed to normalize U+{ord(compat):04X} to U+{ord(unified):04X}"
+
+    def test_cjk_compat_in_context(self):
+        """Test CJK compatibility ideographs within full text (spec 1.3)"""
+        rule = KanjiGlyphSelector()
+        # Text with compatibility ideograph U+F900 豈
+        input_text = "これは\uf900の文字です"
+        result = rule.apply(input_text)
+        # Should normalize to unified ideograph U+8C48
+        assert "\u8c48" in result
+        assert "\uf900" not in result
+        assert rule.warning_count > 0
+
+    def test_multiple_cjk_compat_chars(self):
+        """Test multiple CJK compatibility ideographs in one text (spec 1.3)"""
+        rule = KanjiGlyphSelector()
+        # Multiple compatibility ideographs: 豈更車
+        input_text = "\uf900\uf901\uf902"
+        result = rule.apply(input_text)
+        # All should be normalized
+        expected = "\u8c48\u66f4\u8eca"
+        assert result == expected
+        assert rule.warning_count == 3
+
+    def test_cjk_compat_supplement_range(self):
+        """Test CJK Compatibility Ideographs Supplement range (U+2F800-U+2FA1F)"""
+        rule = KanjiGlyphSelector()
+        # Check that supplement range is detected
+        assert rule._is_compat_ideograph(0x2F800) is True
+        assert rule._is_compat_ideograph(0x2FA1F) is True
+        assert rule._is_compat_ideograph(0x2FA20) is False
+
     def test_mixed_text_with_kanji(self):
         """Test text with mix of kanji, kana, and other characters"""
         rule = KanjiGlyphSelector()
@@ -608,6 +652,78 @@ class TestCharacterRangeValidator:
 
         # Phase 3 rules
         assert "character_range" in rule_names
+
+
+class TestCJKCompatibilityIntegration:
+    """Integration tests for CJK compatibility ideograph normalization (spec 1.3)"""
+
+    def test_rashomon_style_text_with_compat_chars(self):
+        """Test realistic novel text with CJK compatibility ideographs"""
+        # Create realistic text similar to Rashomon with compatibility ideographs
+        input_text = (
+            "　ある日の暮方の事である。一人の下人が、羅生門の下で雨やみを待っていた。\n"
+            f"　広い門の下には、この男の{chr(0xF900)}にこの一人である。\n"
+            f"　それは、この二三年、京都には、地震とか辻風とか火事とか饑饉とかいう災いが{chr(0xF901)}つづいて起った。\n"
+            f"　そこで洛中のさびれ方は一{chr(0xF902)}ではない。\n"
+        )
+
+        # Use Phase 2 formatter which includes kanji_glyph rule
+        formatter = JapaneseNovelFormatter(
+            config=JapaneseNovelFormatter.PHASE2_CONFIG
+        )
+        result = formatter.format(input_text)
+
+        # Verify all compatibility ideographs are normalized
+        assert chr(0xF900) not in result  # 豈 (compat) should be removed
+        assert chr(0xF901) not in result  # 更 (compat) should be removed
+        assert chr(0xF902) not in result  # 車 (compat) should be removed
+
+        # Verify unified ideographs are present
+        assert chr(0x8C48) in result  # 豈 (unified)
+        assert chr(0x66F4) in result  # 更 (unified)
+        assert chr(0x8ECA) in result  # 車 (unified)
+
+        # Verify other formatting is preserved
+        assert "　ある日の暮方" in result  # Indentation preserved
+        assert "羅生門" in result  # Regular kanji unchanged
+
+    def test_phase2_handles_compat_ideographs(self):
+        """Test that Phase 2 configuration properly handles compatibility ideographs"""
+        # Test with multiple compatibility ideographs from spec examples
+        input_text = f"{chr(0xF900)}{chr(0xF901)}{chr(0xF902)}{chr(0xFA38)}"
+        formatter = JapaneseNovelFormatter(
+            config=JapaneseNovelFormatter.PHASE2_CONFIG
+        )
+        result = formatter.format(input_text)
+
+        # All should be normalized to unified forms (with paragraph indent added)
+        expected_chars = f"{chr(0x8C48)}{chr(0x66F4)}{chr(0x8ECA)}{chr(0x5668)}"
+        assert expected_chars in result  # Check chars are present
+        # Verify no compat chars remain
+        assert chr(0xF900) not in result
+        assert chr(0xF901) not in result
+        assert chr(0xF902) not in result
+        assert chr(0xFA38) not in result
+
+    def test_compat_chars_with_other_phase2_rules(self):
+        """Test CJK compatibility normalization works with other Phase 2 rules"""
+        # Combine CJK compat chars with other formatting rules
+        input_text = f"...{chr(0xF900)}です。\n\n\nこれは{chr(0xF901)}です。"
+
+        formatter = JapaneseNovelFormatter(
+            config=JapaneseNovelFormatter.PHASE2_CONFIG
+        )
+        result = formatter.format(input_text)
+
+        # Ellipsis should be converted
+        assert "……" in result
+        # Compat chars should be normalized
+        assert chr(0x8C48) in result  # 豈
+        assert chr(0x66F4) in result  # 更
+        # Blank lines (3+ newlines) should be reduced to 2
+        assert "\n\n\n" not in result
+        # Should have paragraph indent
+        assert "　" in result
 
 
 if __name__ == "__main__":

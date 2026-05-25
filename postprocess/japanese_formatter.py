@@ -14,83 +14,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .formatting_rule import FormattingRule
+
 # Configure logging
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
-
-
-class FormattingRule:
-    """
-    Base class for formatting rules
-    """
-
-    def __init__(self, name: str, priority: int):
-        """
-        Initialize formatting rule
-
-        Args:
-            name: Rule identifier
-            priority: Execution priority (lower = earlier)
-        """
-        self.name = name
-        self.priority = priority
-        self.changes = []  # Track changes made by this rule
-
-    def apply(self, text: str) -> str:
-        """
-        Apply the rule to text
-
-        Args:
-            text: Input text
-
-        Returns:
-            Transformed text
-        """
-        raise NotImplementedError(f"Rule {self.name} must implement apply()")
-
-    def log_change(self, line_num: int, before: str, after: str):
-        """
-        Record a change made by this rule
-
-        Args:
-            line_num: Line number where change occurred (1-indexed)
-            before: Text before transformation
-            after: Text after transformation
-        """
-        self.changes.append({"line": line_num, "before": before, "after": after})
-
-    def get_change_summary(self) -> str:
-        """
-        Get a summary of changes made by this rule
-
-        Returns:
-            Summary string describing the changes
-        """
-        if not self.changes:
-            return f"✓ {self.name}: No changes"
-        return f"✓ {self.name}: {len(self.changes)} change(s)"
-
-    def get_detailed_changes(self, max_display: int = 10) -> List[str]:
-        """
-        Get detailed list of changes
-
-        Args:
-            max_display: Maximum number of changes to display
-
-        Returns:
-            List of formatted change descriptions
-        """
-        details = []
-        for change in self.changes[:max_display]:
-            details.append(f"  - Line {change['line']}: \"{change['before']}\" → \"{change['after']}\"")
-
-        if len(self.changes) > max_display:
-            details.append(f"  ... and {len(self.changes) - max_display} more change(s)")
-
-        return details
-
-    def reset_changes(self):
-        """Reset the change log"""
-        self.changes = []
 
 
 class EllipsisNormalizer(FormattingRule):
@@ -460,6 +387,7 @@ class CharacterRangeValidator(FormattingRule):
         super().__init__("character_range", priority=99)  # Lowest priority - validate after all transformations
         self.logger = logging.getLogger(__name__)
         self.out_of_range_chars = []  # Store out-of-range character information
+        self.warnings = []  # Store warnings in standardized format
 
     def apply(self, text: str) -> str:
         """
@@ -476,6 +404,7 @@ class CharacterRangeValidator(FormattingRule):
         """
         # Reset stored information
         self.out_of_range_chars = []
+        self.warnings = []
 
         # Detect all out-of-range characters with line and column info
         lines = text.split("\n")
@@ -486,8 +415,9 @@ class CharacterRangeValidator(FormattingRule):
                 except UnicodeEncodeError:
                     self.out_of_range_chars.append((line_num, col_num, char))
 
-        # Log warnings if out-of-range characters found
+        # Build warnings list
         if self.out_of_range_chars:
+            self._build_warnings()
             self._log_warnings(self.out_of_range_chars)
 
         return text  # Non-destructive: return original text
@@ -524,6 +454,47 @@ class CharacterRangeValidator(FormattingRule):
 
             self.logger.warning(f"  U+{code_point:04X} '{char}' ({char_name}) at {loc_display}")
 
+    def _build_warnings(self):
+        """
+        Build warnings list for standardized warning output
+
+        Converts out_of_range_chars to standardized (line_num, message) format
+        """
+        # Group by character to create summary messages
+        char_locations = {}
+        for line_num, col_num, char in self.out_of_range_chars:
+            if char not in char_locations:
+                char_locations[char] = []
+            char_locations[char].append((line_num, col_num))
+
+        # Create warning messages
+        for char in sorted(char_locations.keys(), key=lambda c: ord(c)):
+            code_point = ord(char)
+            char_name = unicodedata.name(char, "UNKNOWN")
+            locations = char_locations[char]
+
+            # Use the first occurrence line number as the primary line
+            first_line = locations[0][0]
+
+            # Create message with all locations
+            location_strs = [f"line {line}:{col}" for line, col in locations[:5]]
+            if len(locations) > 5:
+                loc_display = ", ".join(location_strs) + f", ... ({len(locations)} total)"
+            else:
+                loc_display = ", ".join(location_strs)
+
+            message = f"U+{code_point:04X} '{char}' ({char_name}) at {loc_display}"
+            self.warnings.append((first_line, message))
+
+    def get_warnings(self):
+        """
+        Get validation warnings
+
+        Returns:
+            List of (line_num, message) tuples
+        """
+        return self.warnings
+
 
 class KanjiGlyphSelector(FormattingRule):
     """Select appropriate Japanese kanji glyphs"""
@@ -552,6 +523,8 @@ class KanjiGlyphSelector(FormattingRule):
         super().__init__("kanji_glyph", priority=8)
         self.warning_count = 0
         self.logger = logging.getLogger(__name__)
+        self.warnings = []  # Store warnings in standardized format
+        self.compat_ideographs = []  # Store compatibility ideograph information
 
     def apply(self, text: str) -> str:
         """
@@ -566,24 +539,35 @@ class KanjiGlyphSelector(FormattingRule):
         instead of NFKC to preserve semantic distinctions while
         normalizing to canonical Japanese glyphs.
         """
+        # Reset stored information
         self.warning_count = 0
+        self.warnings = []
+        self.compat_ideographs = []
 
         # First, check for compatibility ideographs BEFORE normalization
-        for char in text:
-            code_point = ord(char)
+        # Also track line numbers for warnings
+        lines = text.split("\n")
+        for line_num, line in enumerate(lines, 1):
+            for char in line:
+                code_point = ord(char)
 
-            # Check if character is in CJK compatibility ranges
-            if self._is_compat_ideograph(code_point):
-                # Get the canonical decomposition
-                decomposed = unicodedata.decomposition(char)
-                if decomposed:
-                    self.warning_count += 1
-                    # Get the normalized character
-                    normalized_char = unicodedata.normalize("NFC", char)
-                    self.logger.warning(
-                        f"CJK compatibility ideograph detected: U+{code_point:04X} '{char}' "
-                        f"→ normalized to U+{ord(normalized_char):04X} '{normalized_char}'"
-                    )
+                # Check if character is in CJK compatibility ranges
+                if self._is_compat_ideograph(code_point):
+                    # Get the canonical decomposition
+                    decomposed = unicodedata.decomposition(char)
+                    if decomposed:
+                        self.warning_count += 1
+                        # Get the normalized character
+                        normalized_char = unicodedata.normalize("NFC", char)
+                        self.compat_ideographs.append((line_num, char, code_point, normalized_char))
+                        self.logger.warning(
+                            f"CJK compatibility ideograph detected: U+{code_point:04X} '{char}' "
+                            f"→ normalized to U+{ord(normalized_char):04X} '{normalized_char}'"
+                        )
+
+        # Build warnings list
+        if self.compat_ideographs:
+            self._build_warnings()
 
         if self.warning_count > 0:
             self.logger.info(f"Total kanji normalization warnings: {self.warning_count}")
@@ -605,6 +589,28 @@ class KanjiGlyphSelector(FormattingRule):
             if start <= code_point <= end:
                 return True
         return False
+
+    def _build_warnings(self):
+        """
+        Build warnings list for standardized warning output
+
+        Converts compat_ideographs to standardized (line_num, message) format
+        """
+        for line_num, char, code_point, normalized_char in self.compat_ideographs:
+            message = (
+                f"CJK compatibility ideograph U+{code_point:04X} '{char}' "
+                f"→ normalized to U+{ord(normalized_char):04X} '{normalized_char}'"
+            )
+            self.warnings.append((line_num, message))
+
+    def get_warnings(self):
+        """
+        Get validation warnings
+
+        Returns:
+            List of (line_num, message) tuples
+        """
+        return self.warnings
 
 
 class JapaneseNovelFormatter:
@@ -733,49 +739,35 @@ class JapaneseNovelFormatter:
             print(f"Total changes: {total_changes}")
             print("=" * 60)
 
-        # Print character range validation warnings
-        self._print_character_range_warnings()
+        # Print validation warnings
+        self._print_validation_warnings()
 
-    def _print_character_range_warnings(self):
-        """Print character range validation warnings if any"""
-        # Find CharacterRangeValidator rule
-        validator = None
+    def _print_validation_warnings(self):
+        """Print validation warnings from validator rules"""
+        # Collect warnings from all rules that have get_warnings() method
+        all_warnings = []
+
         for rule in self.rules:
-            if isinstance(rule, CharacterRangeValidator):
-                validator = rule
-                break
+            if hasattr(rule, "get_warnings"):
+                warnings = rule.get_warnings()
+                if warnings:
+                    all_warnings.append((rule.name, warnings))
 
-        if not validator or not validator.out_of_range_chars:
+        if not all_warnings:
             return
 
-        # Print warnings
+        # Print warnings section
         print("\n" + "=" * 60)
-        print("CHARACTER RANGE VALIDATION WARNINGS")
+        print("VALIDATION WARNINGS")
         print("=" * 60)
-        print(f"Found {len(validator.out_of_range_chars)} character(s) outside JIS X 0213:2004 range:")
 
-        # Group by character
-        char_locations = {}
-        for line_num, col_num, char in validator.out_of_range_chars:
-            if char not in char_locations:
-                char_locations[char] = []
-            char_locations[char].append((line_num, col_num))
+        for rule_name, warnings in all_warnings:
+            print(f"\n{rule_name.upper()}:")
+            for line_num, message in warnings[:10]:  # Limit to first 10 warnings per rule
+                print(f"  Line {line_num}: {message}")
 
-        # Print details for each unique character
-        for char in sorted(char_locations.keys(), key=lambda c: ord(c)):
-            code_point = ord(char)
-            char_name = unicodedata.name(char, "UNKNOWN")
-            locations = char_locations[char]
-
-            # Format locations as "line:column"
-            location_strs = [f"line {line}:{col}" for line, col in locations[:5]]
-
-            if len(locations) > 5:
-                loc_display = ", ".join(location_strs) + f", ... ({len(locations)} total)"
-            else:
-                loc_display = ", ".join(location_strs)
-
-            print(f"  U+{code_point:04X} '{char}' ({char_name}) at {loc_display}")
+            if len(warnings) > 10:
+                print(f"  ... and {len(warnings) - 10} more warning(s)")
 
         print("=" * 60)
 
@@ -824,59 +816,45 @@ class JapaneseNovelFormatter:
                 f.write("-" * 60 + "\n")
                 f.write(f"Total changes: {total_changes}\n")
 
-            # Write character range validation warnings
-            self._write_character_range_warnings(f)
+            # Write validation warnings
+            self._write_validation_warnings(f)
 
             f.write("\n" + "=" * 60 + "\n")
             f.write("End of log\n")
             f.write("=" * 60 + "\n")
 
-    def _write_character_range_warnings(self, f):
+    def _write_validation_warnings(self, f):
         """
-        Write character range validation warnings to log file
+        Write validation warnings to log file
 
         Args:
             f: File object to write to
         """
-        # Find CharacterRangeValidator rule
-        validator = None
-        for rule in self.rules:
-            if isinstance(rule, CharacterRangeValidator):
-                validator = rule
-                break
+        # Collect warnings from all rules
+        all_warnings = []
 
-        if not validator or not validator.out_of_range_chars:
+        for rule in self.rules:
+            if hasattr(rule, "get_warnings"):
+                warnings = rule.get_warnings()
+                if warnings:
+                    all_warnings.append((rule.name, warnings))
+
+        if not all_warnings:
             return
 
         # Write warnings section
         f.write("\n" + "=" * 60 + "\n")
-        f.write("Character Range Validation Warnings\n")
+        f.write("Validation Warnings\n")
         f.write("=" * 60 + "\n")
-        f.write(f"Found {len(validator.out_of_range_chars)} character(s) outside JIS X 0213:2004 range:\n\n")
 
-        # Group by character
-        char_locations = {}
-        for line_num, col_num, char in validator.out_of_range_chars:
-            if char not in char_locations:
-                char_locations[char] = []
-            char_locations[char].append((line_num, col_num))
+        for rule_name, warnings in all_warnings:
+            f.write(f"\n{rule_name.upper()}:\n")
+            f.write(f"Total warnings: {len(warnings)}\n\n")
 
-        # Write details for each unique character
-        for char in sorted(char_locations.keys(), key=lambda c: ord(c)):
-            code_point = ord(char)
-            char_name = unicodedata.name(char, "UNKNOWN")
-            locations = char_locations[char]
+            for line_num, message in warnings:
+                f.write(f"  Line {line_num}: {message}\n")
 
-            # Format locations as "line:column"
-            location_strs = [f"line {line}:{col}" for line, col in locations[:10]]
-
-            if len(locations) > 10:
-                loc_display = ", ".join(location_strs) + f", ... ({len(locations)} total)"
-            else:
-                loc_display = ", ".join(location_strs)
-
-            f.write(f"  U+{code_point:04X} '{char}' ({char_name})\n")
-            f.write(f"    Locations: {loc_display}\n\n")
+            f.write("\n")
 
         f.write("-" * 60 + "\n")
 

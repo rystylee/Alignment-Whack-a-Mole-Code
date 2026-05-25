@@ -724,9 +724,9 @@ class TestCharacterRangeValidator:
         assert "character_range" in rule_names
 
     def test_priority_is_zero(self):
-        """Test that character range validator has highest priority (0)"""
+        """Test that character range validator has lowest priority (99)"""
         rule = CharacterRangeValidator()
-        assert rule.priority == 0
+        assert rule.priority == 99
 
     def test_phase3_includes_all_previous_phases(self):
         """Test that Phase 3 includes all Phase 1 and 2 rules"""
